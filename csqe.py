@@ -20,6 +20,7 @@ from utils.common import save_json, save_jsonl, load_json, file_exists
 from utils.eval_utils import TrecEvaluator
 
 import spacy, random, re
+import time
 
 # def load_spacy_nlp():
 spacy_nlp = spacy.load("en_core_web_sm", disable=["tagger", "parser"])
@@ -325,7 +326,7 @@ def define_search_args(parser):
 def progressive_query_rewrite(
         openai_api, query, top_passages,
         max_demo_len=None, index=None,
-        expansion_method="",
+        expansion_method="", save_expansions=False, output_dir=None,
         *arg, **kwargs):
 
     if max_demo_len:
@@ -379,7 +380,9 @@ You will begin by examining the initially retrieved documents and identifying th
     }
     
     if expansion_method == "csqe":
+        print(f"Processing query: {query[:50]}...")
         # keqe expansion
+        print("Starting KEQE API call...")
         messages = [
         {"role": "system", "content": sys_prompts["keqe"]},
         {"role": "user", "content": user_prompts["keqe"]},
@@ -388,6 +391,9 @@ You will begin by examining the initially retrieved documents and identifying th
         gen_fn = openai_api.completion_chat
         response_list_keqe = gen_fn(messages, *arg, **kwargs)
 
+        print(f"KEQE complete. Got {len(response_list_keqe)} responses")
+
+        print("Starting CSQE API call...")
         # corpus-originated expansion
         messages = [
             {"role": "system", "content": sys_prompts["csqe"]},
@@ -398,10 +404,37 @@ You will begin by examining the initially retrieved documents and identifying th
         ]
         gen_fn = openai_api.completion_chat
         response_list_csqe = gen_fn(messages, *arg, **kwargs)
+
+        print(f"CSQE complete. Got {len(response_list_csqe)} responses")
+
         response_list = response_list_keqe + response_list_csqe
         print(response_list)
 
         new_list = [query] * len(response_list_keqe) + response_list_keqe + [extract_key_sentences(response_csqe) for response_csqe in response_list_csqe]
+
+
+        # code for saving query expansions
+
+        if save_expansions and output_dir:
+            expansions_dir = os.path.join(output_dir, "expansions")
+            os.makedirs(expansions_dir, exist_ok=True)
+            
+            # Create a unique filename based on the query
+            safe_query = re.sub(r'[^a-zA-Z0-9]', '_', query)[:50]
+            filename = f"{safe_query}_{int(time.time())}.json"
+            
+            # Save both KEQE and CSQE expansions
+            expansion_data = {
+                "query": query,
+                "keqe_expansions": response_list_keqe,
+                "csqe_expansions": [extract_key_sentences(r) for r in response_list_csqe],
+                "top_passages": top_passages,
+                "combined_expansion": " ".join(new_list)
+            }
+            
+            with open(os.path.join(expansions_dir, filename), 'w') as f:
+                json.dump(expansion_data, f, indent=2)
+
 
     elif expansion_method == "keqe":
         messages = [
@@ -458,7 +491,7 @@ def main():
     parser.add_argument("--output_dir", type=str, required=True, help="Path to save outputs")
     parser.add_argument('--overwrite_output_dir', action='store_true', help="Overwrite existing output dir")
     parser.add_argument("--openai_api_key", type=str, default="none")
-    parser.add_argument("--openai_model", type=str, default="gpt-3.5-turbo-0301")
+    parser.add_argument("--openai_model", type=str, default="gpt-3.5-turbo")
     parser.add_argument("--answer_key", type=str, default="contents")
     parser.add_argument("--keep_passage_num", type=int, default=10, help="Number of passages kept for CSQE")
     parser.add_argument('--write_top_passages', action='store_true', help="Save the top retrieved passages")
@@ -467,7 +500,7 @@ def main():
     parser.add_argument('--max_tokens', type=int, default=1024, help="Maximum number of tokens to generate each time")
     parser.add_argument('--expansion_method', type=str, default="csqe")
     parser.add_argument('--trec_python_path', type=str, default="python3")
-
+    parser.add_argument('--save_expansions', action='store_true', help="Save query expansions to file")
 
 
     args = parser.parse_args()
@@ -481,8 +514,8 @@ def main():
         os.makedirs(args.output_dir)  # Create output directory if needed
 
     # openai stuff
-    openai.api_key = args.openai_api_key
-    openai_api = OpenaiCompletion(model_name=args.openai_model)
+    # openai.api_key = args.openai_api_key
+    openai_api = OpenaiCompletion(model_name=args.openai_model, api_key=args.openai_api_key)
 
     # query data
     query_iterator = get_query_iterator(args.topics, TopicsFormat(args.topics_format))
@@ -516,6 +549,8 @@ def main():
                     max_demo_len=args.max_demo_len, index=args.index,
                     expansion_method=args.expansion_method,
                     temperature=1.0, max_tokens=args.max_tokens,
+                    save_expansions=args.save_expansions,
+                    output_dir=args.output_dir,
                 )
                 aug_qid_query_list.append((topic_id, query_aug))
                 print(topic_id, "|||", query_aug)

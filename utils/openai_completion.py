@@ -4,14 +4,15 @@ import openai
 from tqdm import tqdm
 from time import sleep
 import spacy
+from openai import OpenAI  # Add this import
 
 
 class OpenaiCompletion(object):
     MODELS = set(
         [
-            "gpt-3.5-turbo-0301",
             "gpt-3.5-turbo",
-            "gpt-4-0314",
+            "gpt-3.5-turbo",
+            "gpt-4",
             "gpt-4",
             "text-davinci-003",
             "text-davinci-002",
@@ -34,33 +35,68 @@ class OpenaiCompletion(object):
             openai.api_key = api_key
         self.api_key = openai.api_key
 
+        self.client = OpenAI(api_key=api_key)
+
         self.spacy_nlp = None
 
-    def completion_chat(self, messages, max_tokens=512, temperature=1, top_p=1, n=2,):
+    def completion_chat(self, messages, max_tokens=512, temperature=1, top_p=1, n=1,):
+        # def parse_api_result(result):
+        #     to_return = []
+        #     for idx, g in enumerate(result['choices']):
+        #         to_return.append(g["message"]["content"])
+        #     return to_return
+
+
         def parse_api_result(result):
-            to_return = []
-            for idx, g in enumerate(result['choices']):
-                to_return.append(g["message"]["content"])
-            return to_return
+            response_list = []
+            for choice in result.choices:
+                response_list.append(choice.message.content.strip())
+            return response_list
 
         get_result = False
         res = []
-        while not get_result:
+
+        # Attempt API call with retry logic
+        for attempt in range(3):
             try:
-                res = openai.ChatCompletion.create(
+                # New API call format
+                res = self.client.chat.completions.create(
                     model=self.model_name,
                     messages=messages,
+                    max_tokens=max_tokens,
                     temperature=temperature,
                     top_p=top_p,
-                    n=n,
-                    # stop=['\n\n\n', ],
-                    max_tokens=max_tokens,
-                    # logprobs=logprobs,
+                    n=n
                 )
-                get_result=True
-            except:
-                sleep(1)
+                get_result = True
+                break
+            except Exception as e:
+                print(f"API call attempt {attempt+1} failed: {e}")
+                sleep(3)  # Add a short delay before retrying
+                
+        if not get_result:
+            print("All API attempts failed, returning empty responses")
+            return ["API call failed"] * n
+            
         return parse_api_result(res)
+
+
+        # while not get_result:
+        #     try:
+        #         res = openai.ChatCompletion.create(
+        #             model=self.model_name,
+        #             messages=messages,
+        #             temperature=temperature,
+        #             top_p=top_p,
+        #             n=n,
+        #             # stop=['\n\n\n', ],
+        #             max_tokens=max_tokens,
+        #             # logprobs=logprobs,
+        #         )
+        #         get_result=True
+        #     except:
+        #         sleep(1)
+        # return parse_api_result(res)
 
     def completion_non_chat(self, messages, max_tokens=512, temperature=1, top_p=1, n=2,):
         def parse_api_result(result):
